@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -20,10 +21,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+/** App root: the launch hero, then the tabbed app once the user enters. */
+@Composable
+fun GandulaRoot(modifier: Modifier = Modifier) {
+    var started by remember { mutableStateOf(false) }
+    if (started) {
+        GandulaApp(modifier, initialTab = 1) // land on Carreira
+    } else {
+        GandulaSplash(modifier, onStart = { started = true })
+    }
+}
+
 /** Top-level app shell: a branded header + three tabs. */
 @Composable
-fun GandulaApp(modifier: Modifier = Modifier) {
-    var tab by remember { mutableIntStateOf(0) }
+fun GandulaApp(modifier: Modifier = Modifier, initialTab: Int = 0) {
+    var tab by remember { mutableIntStateOf(initialTab) }
     val titles = listOf("Partida", "Carreira", "Elenco")
     Column(modifier.fillMaxSize()) {
         // Brand bar
