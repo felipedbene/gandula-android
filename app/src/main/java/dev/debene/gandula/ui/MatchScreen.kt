@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.debene.ui.theme.GandulaMono
 import dev.debene.gandula.domain.Match
 import dev.debene.gandula.domain.MatchEvent
 import dev.debene.gandula.domain.MatchEventKind
@@ -111,14 +112,39 @@ private fun ScoreHeader(match: Match, teams: List<Team>) {
     val away = teams.firstOrNull { it.id == match.away }?.name ?: "Visitante"
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                SideCrest(home, match.home, Modifier.weight(1f))
+                Text(
+                    "${match.result.homeGoals} : ${match.result.awayGoals}",
+                    fontFamily = GandulaMono,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 30.sp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                SideCrest(away, match.away, Modifier.weight(1f))
+            }
             Text(
-                "$home  ${match.result.homeGoals} x ${match.result.awayGoals}  $away",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
+                "semente ${match.seed}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
             )
-            Text("semente ${match.seed}", style = MaterialTheme.typography.labelSmall)
         }
+    }
+}
+
+@Composable
+private fun SideCrest(name: String, id: Int, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        ClubCrest(name, id, size = 40.dp)
+        Text(
+            name,
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 
@@ -141,7 +167,7 @@ private fun FeedLine(event: MatchEvent) {
     Text(
         text = event.text,
         color = color,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = GandulaMono,
         fontSize = 13.sp,
         fontWeight = if (isGoal || isWhistle) FontWeight.Bold else FontWeight.Normal,
         modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),

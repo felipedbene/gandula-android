@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.debene.ui.theme.GandulaMono
 import dev.debene.gandula.career.TransferMarket
 import dev.debene.gandula.domain.Player
 
@@ -121,10 +122,10 @@ private fun SectionHeader(text: String) {
 @Composable
 private fun PlayerLine(player: Player, trailing: String, actionLabel: String, enabled: Boolean, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(player.position.name, fontFamily = FontFamily.Monospace, fontSize = 12.sp, modifier = Modifier.width(36.dp))
-        Text("${TransferMarket.playerOverall(player)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(28.dp))
+        Text(player.position.name, fontFamily = GandulaMono, fontSize = 12.sp, modifier = Modifier.width(36.dp))
+        Text("${TransferMarket.playerOverall(player)}", fontFamily = GandulaMono, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(28.dp))
         Text(player.name, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1)
-        Text(trailing, fontFamily = FontFamily.Monospace, fontSize = 11.sp, modifier = Modifier.width(110.dp))
+        Text(trailing, fontFamily = GandulaMono, fontSize = 11.sp, modifier = Modifier.width(110.dp))
         OutlinedButton(onClick = onClick, enabled = enabled) { Text(actionLabel, fontSize = 12.sp) }
     }
 }

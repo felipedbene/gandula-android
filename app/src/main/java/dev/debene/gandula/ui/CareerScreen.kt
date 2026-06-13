@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.debene.ui.theme.GandulaMono
 import dev.debene.gandula.career.Finances
 import dev.debene.gandula.career.SeasonHistory
 import dev.debene.gandula.career.UserOutcome
@@ -173,7 +174,7 @@ private fun TacticRow(label: String, value: String, onCycle: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, style = MaterialTheme.typography.labelMedium)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(value, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text(value, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, fontFamily = GandulaMono)
             OutlinedButton(onClick = onCycle, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp)) {
                 Text("▸", style = MaterialTheme.typography.labelMedium)
             }
@@ -333,7 +334,7 @@ private fun LedgerLine(label: String, value: Long, bold: Boolean = false) {
         Text(
             formatMoney(value),
             style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = GandulaMono,
             fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
             color = if (value < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
         )
@@ -446,7 +447,7 @@ private fun androidx.compose.foundation.layout.RowScope.Cell(
     Text(
         text = text,
         modifier = Modifier.weight(weight),
-        fontFamily = FontFamily.Monospace,
+        fontFamily = GandulaMono,
         fontSize = 12.sp,
         fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
         textAlign = if (end) TextAlign.End else TextAlign.Start,
