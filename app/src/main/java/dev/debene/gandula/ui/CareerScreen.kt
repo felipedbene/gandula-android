@@ -8,8 +8,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -25,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -227,7 +229,7 @@ fun CareerScreenContent(
     halftime: @Composable () -> Unit = {},
 ) {
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         CareerHeader(ui.club, ui.division, ui.year, ui.money, ui.fanbase, ui.stadiumCapacity, ui.round, ui.total)
@@ -391,33 +393,44 @@ private fun StandingsTable(
     nameOf: (Int) -> String,
     modifier: Modifier = Modifier,
 ) {
+    // Plain rows (not a nested LazyColumn) so the whole career screen scrolls as one.
     Column(modifier) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 8.dp)) {
             Cell("#", 0.10f, bold = true)
-            Cell("Time", 0.46f, bold = true)
+            Cell("Time", 0.50f, bold = true)
             Cell("J", 0.11f, bold = true, end = true)
-            Cell("SG", 0.15f, bold = true, end = true)
+            Cell("SG", 0.14f, bold = true, end = true)
             Cell("P", 0.13f, bold = true, end = true)
         }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            itemsIndexed(standings) { i, s ->
-                val isUser = s.teamId == controlledTeamId
-                val bg = when {
-                    isUser -> MaterialTheme.colorScheme.primaryContainer
-                    i < 3 -> MaterialTheme.colorScheme.surfaceVariant
-                    i >= standings.size - 3 -> MaterialTheme.colorScheme.errorContainer
-                    else -> MaterialTheme.colorScheme.surface
+        standings.forEachIndexed { i, s ->
+            val isUser = s.teamId == controlledTeamId
+            val bg = when {
+                isUser -> MaterialTheme.colorScheme.primaryContainer
+                i < 3 -> MaterialTheme.colorScheme.surfaceVariant
+                i >= standings.size - 3 -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surface
+            }
+            Row(
+                Modifier.fillMaxWidth()
+                    .padding(vertical = 1.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(bg)
+                    .padding(vertical = 7.dp, horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Cell("${i + 1}", 0.10f, bold = isUser)
+                Row(Modifier.weight(0.50f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ClubCrest(nameOf(s.teamId), s.teamId, size = 18.dp)
+                    Text(
+                        nameOf(s.teamId),
+                        fontSize = 12.sp,
+                        fontWeight = if (isUser) FontWeight.Bold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
                 }
-                Row(
-                    Modifier.fillMaxWidth().background(bg).padding(vertical = 5.dp, horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Cell("${i + 1}", 0.10f, bold = isUser)
-                    Cell(nameOf(s.teamId), 0.46f, bold = isUser)
-                    Cell("${s.played}", 0.11f, end = true)
-                    Cell(formatSigned(s.goalDifference), 0.15f, end = true)
-                    Cell("${s.points}", 0.13f, bold = true, end = true)
-                }
+                Cell("${s.played}", 0.11f, end = true)
+                Cell(formatSigned(s.goalDifference), 0.14f, end = true)
+                Cell("${s.points}", 0.13f, bold = true, end = true)
             }
         }
     }
