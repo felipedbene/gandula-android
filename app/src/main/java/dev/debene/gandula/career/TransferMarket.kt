@@ -177,13 +177,17 @@ object TransferMarket {
         return CheckResult.Ok
     }
 
-    // ─── Mutations (caller gates with can*) ──────────────────────────────────
+    // ─── Mutations (caller gates with can*; caller re-simulates the season) ───
+    /** Record a buy effective from the current round: debit cash and append a
+     *  transfer carrying the round + player snapshot. The squad is *derived* from
+     *  the transfer log ([Roster.rosterAtRound]); the reinforcement takes the pitch
+     *  in the user's matches from this round forward once the season is rebuilt. */
     fun buy(career: Career, registry: Map<Int, Team>, player: Player): Career {
         val price = playerPrice(player, Kind.BUY)
         return career.copy(
             money = career.money - price,
-            userRoster = Roster.workingRoster(career, registry) + player,
-            transfers = career.transfers + TransferRecord("buy", player.name, player.position, price),
+            transfers = career.transfers +
+                TransferRecord("buy", player.name, player.position, price, career.season.currentRoundIdx, player),
         )
     }
 
@@ -191,8 +195,8 @@ object TransferMarket {
         val price = playerPrice(player, Kind.SELL)
         return career.copy(
             money = career.money + price,
-            userRoster = Roster.workingRoster(career, registry).filter { it.id != player.id },
-            transfers = career.transfers + TransferRecord("sell", player.name, player.position, price),
+            transfers = career.transfers +
+                TransferRecord("sell", player.name, player.position, price, career.season.currentRoundIdx, player),
         )
     }
 

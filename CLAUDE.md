@@ -130,9 +130,15 @@ The **match engine is ported and working** — a vertical "play one match" slice
   actually play** and `Finances.seasonSalary` bills their wages. The market is a deterministic
   per-(seed, year) 12-player free-agent pool (`mulberry32` PRNG, position-biased attrs + a 12%
   elite tail), age-curve pricing (`avg² × 100 × ageMultiplier`, 0.7 resale haircut), scout
-  reports, and `canBuy`/`canSell` guards (roster 14–25, no selling an XI starter). The market is
-  **gated to between seasons** (`marketOpen = seasonComplete`) so per-round finances stay
-  consistent; buys apply to next season's sim.
+  reports, and `canBuy`/`canSell` guards (roster 14–25, no selling an XI starter). The squad
+  market is **open all season** (`transfersOpen = !fired`): a buy/sell is recorded as a
+  `TransferRecord` tagged with the round it took effect (+ a player snapshot), and the squad is
+  *derived* from that log via `Roster.rosterAtRound(seasonStart, transfers, round)` — `userRoster`
+  now means the season-**start** squad, not the live one. A mid-season move re-simulates only the
+  user's still-unplayed matches (`CareerEngine.rebuildSeason`); already-revealed rounds, their
+  results and banked cash are untouched, and wages bill from the move's round forward
+  (`salarySliceForRound` uses `rosterAtRound`). The Copa squad is fixed at season start (cup
+  registration). Deal-signing (TV/sponsorship) stays between-seasons (`marketOpen = seasonComplete`).
 - UI: `CareerScreen` finances card (ledger, runway, stadium/marketing buttons) + "demitido"
   (fired) state via flat `CareerUi`. Third tab **"Elenco"** = `MarketScreen` (squad + free-agent
   pool, buy/sell). `MatchScreen`/`CareerScreen`/`MarketScreen` share one `CareerViewModel`
@@ -162,17 +168,20 @@ The **match engine is ported and working** — a vertical "play one match" slice
   the tail (each segment fair-rounded). `keepDeal` carries deals across the boundary (drops on term
   expiry / relegation / failed clause). `SeasonTactics` (formation + tactics) is `Career.userTactics`,
   applied via `Roster.effectiveTeam` and threaded through `buildSeason`. `TransferRecord` tracks
-  buys/sells on `Career.transfers`, archived into `SeasonHistory.transfers` at the boundary. All
-  three pre-season actions (sign deal / set tactics / market) are gated to `seasonComplete` so the
-  current (pre-simulated) season stays consistent; they take effect next season.
+  buys/sells on `Career.transfers` (now also tagged with round + player snapshot for mid-season
+  re-sim), archived into `SeasonHistory.transfers` at the boundary. Sign-deal and set-season-tactics
+  stay gated to `seasonComplete` (take effect next season); the squad market and **per-match
+  tactics are live mid-season** (see below).
 - UI: `CareerScreen` pre-season section (tactics cyclers + deal-offer buttons, shown when the
   season's done); `MarketScreen` "Negócios desta temporada" list; transfer/cup line in the
   last-season summary.
 - Tests: `CareerEngineTest`, `CareerStoreTest`, `FinancesTest`, `TransferMarketTest`,
   `EvolutionTest`, `CopaTest`, `DealsTacticsTest` (transfer record→history→reset, tactics override +
   carry, deal overrides floor + slices sum, keepDeal drops, offer determinism + clause), plus
-  `*ScreenshotTest`s. `CareerStore` is schema v3 (userRoster + userTactics + activeDeals + transfers);
-  `Season.copa` is rebuilt on load, not persisted.
+  `*ScreenshotTest`s, plus `MidSeasonTest` (mid-season buy leaves played rounds intact + reproduces
+  on load; pre-match tactics reproduce on load). `CareerStore` is schema **v5** (userRoster =
+  season-start squad + userTactics + activeDeals + round-tagged transfers + matchTactics +
+  halftimeTactics); `Season.copa` is rebuilt on load, not persisted.
 
 - **Live half-time tactics** — `MatchEngine.simulateFirstHalf` → `HalfTimeState` (live `MatchState`
   + the in-flight RNG) → `simulateSecondHalf(state, home, away)`, which re-reads tactics each tick,
@@ -187,6 +196,107 @@ The **match engine is ported and working** — a vertical "play one match" slice
   `playNextRound` pauses at the interval, `confirmHalftime` resolves + advances.
 - Tests: `HalftimeTest` (split == one-shot; second-half change is deterministic and keeps the first
   half; live patch reproduces on the load path) + `HalftimeScreenshotTest`.
+
+- **Mid-season interventions (live transfers + per-match tactics)** — the season is no longer a
+  frozen pre-sim: it's a deterministic *replay* of overlays (`userTactics`, round-tagged `transfers`,
+  `matchTactics`, `halftimeTactics`) over the seeds. `CareerEngine.rebuildSeason` re-derives the
+  divisions + Copa from the current overlays preserving the reveal cursor, and a unified
+  `patchUserMatches` re-runs each of the user's matches at its per-round squad
+  (`Roster.rosterAtRound`) + pre-kickoff tactic (`matchTactics[round] ?? userTactics`) + optional
+  half-time override — rounds with no change are left byte-identical, so determinism (and the
+  `MatchEngineTest`/`HalftimeTest` invariants) hold. Buy/sell append a round-tagged `TransferRecord`
+  and route through `rebuildSeason` off the main thread (`CareerViewModel.mutateRebuild`); only
+  unplayed user matches change. UI: `CareerScreen` shows a pre-kickoff "Escalação — rodada N" tactics
+  card above the play button (`vm.matchTacticsDraft` + `cyclePre*`), and the **Elenco** tab's market
+  is enabled all season. The Finances card was moved above the Copa card for discoverability.
+
+- **Live match broadcast** — matches play out minute-by-minute instead of revealing instantly. The
+  engine already emits the random-event log (`Shot`/`NearMiss`/`Goal`/`Foul`/`Yellow`/`RedCard`/
+  `PenaltyAwarded`/`PenaltyMissed`/`Substitution`/`HalfTime`/`FullTime`); `ui/LiveMatch.kt`'s
+  `MatchBroadcast` composable just streams a slice of `match.events` over a wall-clock (~340ms/min,
+  a goal pauses longer), ticking a clock 0'→90'+, counting goals into a live scoreboard, with a
+  "Pular" skip; `onDone` fires once when the slice ends. `splitAtHalfTime` cuts the event log at the
+  whistle. **Career** brackets the existing half-time card with two broadcasts: `playNextRound`
+  resolves the user's `CareerEngine.userMatch` and broadcasts the first half → `onBroadcastDone`
+  shows the half-time card → `confirmHalftime` (re-sims the 2nd half if tactics changed) broadcasts
+  the second half → `onBroadcastDone` calls `revealNextRound`. `CareerViewModel.broadcast`
+  (+`CareerUi.live`) drives a `broadcast` slot on `CareerScreen`; the play/pre-match controls hide
+  while live. **Partida** (friendly) plays the whole match as one straight broadcast. Pure
+  presentation — the simulated `Match` is unchanged, so determinism holds.
+
+- **Starting XI selection + PT tactic labels** — `SeasonTactics` gained an optional `xi: List<Int>?`
+  (player ids); `Roster.effectiveTeam` fields it (validated against the roster, bench = the rest), so
+  it flows through the season-default, pre-match, and half-time overlays uniformly and stays
+  deterministic (the XI is read at kickoff). UI: `ui/Lineup.kt`'s `LineupEditor` is a tap-a-starter →
+  tap-a-reserve swap (always 11), exposed via a collapsible "Escalação (titulares)" on the pre-match
+  and pre-season cards (`vm.setPreMatchXi` / `setSeasonXi`, `upcomingXi` / `seasonXi`).
+  `ui/TacticLabels.kt` maps the tactic enums to Portuguese (`ptLabel()`) so the UI never shows the raw
+  English constant names (Attacking/Fast/High/Wide → Ofensivo/Rápido/Alta + formations like 4-3-3).
+
+- **Half-time substitutions** — the half-time card now carries the `LineupEditor` too (capped at 3
+  swaps); the chosen XI rides the half-time `SeasonTactics.xi`. `MatchEngine.simulateSecondHalf` gained
+  optional `homeSubs`/`awaySubs` (`off id → on id`) applied at the interval via `applyUserSubs` (swap
+  `homeCurrentXi`, reset stamina, mark bench used, count toward `MAX_SUBS_PER_MATCH`, emit a
+  `Substitution` event) — **empty by default, so `simulate()` and unchanged half-times stay
+  byte-identical**. `CareerEngine.patchUserMatches` derives the subs from the H1-XI vs half-time-XI
+  diff (`computeSubs`) and passes them, so a substituted second half reproduces on load. Tests:
+  `HalftimeTest` (sub changes 2nd half, deterministic, no-sub == `simulate()`), `MidSeasonTest`
+  (custom XI changes the season + reproduces on load).
+
+- **Contracts / wage demands / departures** (`career.Contracts`) — players have a deterministic
+  *temperament* from (careerSeed, id): **loyal** (refused → sulks, a one-off attribute drop next
+  season) vs **mercenary** (refused → leaves for a fee). Top players may also be **poached** (an
+  outside bid to match-with-a-raise or sell). Each player carries a wage **multiplier**
+  (`Career.wageMultipliers`, default 1.0); `Finances` bills `overall × rate × multiplier`.
+  `endOfSeasonDemands` (pure in seed+year+squad) is generated the moment the season completes
+  (`revealNextRound`) into `Career.pendingDemands`; the user accepts/refuses (`demandDecisions`) in the
+  pre-season "Vestiário" card; `advanceSeason` calls `Contracts.resolve` at the boundary (raises bump
+  the multiplier, departures remove the player + bank the fee, snubs sulk) — never touching the
+  season already played. Persisted in `CareerStore` **schema v6**. Tests: `ContractsTest`.
+
+- **UI design system — "frosted glass / neon console"** (Phase 1 of the visual refresh, modelled on
+  the user's dashboard reference). `ui/theme/Color.kt` repoints the whole palette to deep slate
+  (`#020617`) + indigo/purple accents (`IndigoLight`/`PurpleLight`) + emerald/amber/rose status, with
+  the old color names kept as aliases so every screen adopts it for free. `ui/theme/Glass.kt` adds
+  `GlowBackground` (slate fill + two radial indigo/purple glows, placed once at the app root in
+  `GandulaApp`) and `GlassCard` (translucent body + glowing border). Hero headers use the indigo→purple
+  gradient; the section/finance/player cards use the glass body+border.
+
+- **Pitch-view lineup editor** (Phase 2, per the web reference) — `ui/PitchLineup.kt`'s
+  `PitchLineupEditor` draws a green pitch in a `Canvas` (lines/box/circle) and lays the XI out by
+  position band (FWD up top → GK at the back, spread across the width), with a horizontally-scrollable
+  bench below. **Drag-to-swap**: `detectDragGestures` moves a token (zIndex-lifted, offset by the drag
+  delta); on drop it hit-tests the nearest token centre (window coords via `boundsInWindow`, captured
+  per-token in `onGloballyPositioned`) and swaps starter↔reserve — always 11, so always fieldable.
+  Tokens are **coloured by position** (GK amber / DEF blue / MID green / FWD rose, with a legend), show
+  overall + last name, and ring amber on low stamina / white while dragged. Replaces the list-based
+  `LineupEditor` on the pre-match, pre-season, and half-time cards; `onChange` feeds the same
+  `setPreMatchXi` / `setSeasonXi` / half-time-`xi` paths. Test: `PitchScreenshotTest`.
+  **Formation ⇄ lineup are linked:** the pitch lays out by `Formation.lineCounts()` (DEF/MID/FWD per
+  formation), so cycling 4-3-3 → 4-5-2 reshapes it; cycling the formation **rebuilds the XI**
+  (`CareerViewModel.buildXiForFormation`: best GK + the formation's counts, preferring current
+  starters) so the squad always matches the shape; and drag-swaps are **same-position only** — so the
+  XI is always exactly 1 GK + a valid outfield composition (no keeper in the outfield, no incomplete
+  side). Half-time keeps the same players (reshape only — the 3-sub cap governs personnel).
+  **`Roster.lineupFor(roster, formation, prefer)`** is the single source of truth: it returns `prefer`
+  unchanged when it's already a valid 11 for the formation, else rebuilds (1 GK + `Formation.lineCounts()`,
+  preferring `prefer`, best-by-overall, shortfall filled). `Roster.effectiveTeam` now **always
+  normalizes the user's XI through it**, so a corrupted lineup (e.g. the 2-keeper / striker-at-CB XIs
+  that `reconcileXI`'s position-blind backfill could produce after retirements) is repaired for both
+  display *and* simulation — and the repair is deterministic, so saved careers self-heal on load. The
+  VM's `seasonXi`/`upcomingXi`/`buildXiForFormation` all delegate to `lineupFor`. Test: `MidSeasonTest`
+  (custom 3-5-2 is fielded; `lineupFor` repairs a 2-keeper XI to one keeper).
+
+- **Navigation + focused flow** (Phase 3) — `GandulaApp` replaced the top `TabRow` with a **frosted
+  bottom nav** (`SlateNavBg` + glowing active indicator, `material-icons-extended` now enabled) of
+  **five** destinations: Partida · **Jogo** · **Tabela** · **Finanças** · Elenco. The career screen was
+  split so the pre-match view stays **focused on tactics**: `CareerScreen` ("Jogo") is now just
+  header + tactics/lineup + the play button + live broadcast/half-time/season-end + pre-season
+  (tactics/deals/vestiário); the league standings + Copa moved to `CareerTableScreen` ("Tabela") and
+  the ledger/runway/stadium/marketing levers to `CareerFinanceScreen` ("Finanças") — all three share
+  the one activity-scoped `CareerViewModel`. Polish: the header "Caixa" counts up (`animateIntAsState`)
+  and the live scoreboard border pulses (`rememberInfiniteTransition`). `FinancesCard` was refactored
+  to take explicit params (no longer the whole `CareerUi`).
 
 **The full upstream gameplay arc is now ported.** Remaining gaps are minor: Room is on the
 classpath but unused (career uses the JSON file slot, `CareerStore` schema v4); `Season.copa` and

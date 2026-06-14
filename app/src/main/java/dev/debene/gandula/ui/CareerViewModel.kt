@@ -20,7 +20,9 @@ import dev.debene.gandula.career.TransferMarket
 import dev.debene.gandula.career.TransferRecord
 import dev.debene.gandula.data.CareerStore
 import dev.debene.gandula.data.TeamRepository
+import dev.debene.gandula.domain.Formation
 import dev.debene.gandula.domain.Player
+import dev.debene.gandula.domain.Position
 import dev.debene.gandula.domain.Team
 import dev.debene.gandula.engine.TeamStats
 import kotlinx.coroutines.Dispatchers
@@ -114,52 +116,186 @@ class CareerViewModel(private val app: Application) : AndroidViewModel(app) {
         val userGoals: Int,
         val oppGoals: Int,
         val base: SeasonTactics,
+        val squad: List<Player>,
+        val xi: List<Int>,
     )
 
     var halftimePrompt by mutableStateOf<HalftimePrompt?>(null)
         private set
     private var pendingRound = 0
+    private var pendingMatch: dev.debene.gandula.domain.Match? = null
+
+    /** A slice of the user's current-round match being broadcast minute-by-minute
+     *  (first half, then — after the interval — second half). */
+    data class Broadcast(
+        val round: Int,
+        val homeId: Int,
+        val awayId: Int,
+        val homeName: String,
+        val awayName: String,
+        val startMinute: Int,
+        val baselineHome: Int,
+        val baselineAway: Int,
+        val events: List<dev.debene.gandula.domain.MatchEvent>,
+        val secondHalf: Boolean,
+    )
+
+    var broadcast by mutableStateOf<Broadcast?>(null)
+        private set
+
+    private fun firstHalfGoals(match: dev.debene.gandula.domain.Match): Pair<Int, Int> {
+        val (firstHalf, _) = splitAtHalfTime(match.events)
+        val h = firstHalf.count { it.kind is dev.debene.gandula.domain.MatchEventKind.Goal && it.side == dev.debene.gandula.domain.Side.Home }
+        val a = firstHalf.count { it.kind is dev.debene.gandula.domain.MatchEventKind.Goal && it.side == dev.debene.gandula.domain.Side.Away }
+        return h to a
+    }
+
+    /** Called by the UI when a broadcast slice finishes (played or skipped):
+     *  after the first half → show the half-time card; after the second → advance. */
+    fun onBroadcastDone() {
+        val b = broadcast ?: return
+        broadcast = null
+        if (!b.secondHalf) {
+            val match = pendingMatch ?: return
+            val c = career ?: return
+            val (hg, ag) = firstHalfGoals(match)
+            val userIsHome = match.home == c.controlledTeamId
+            halftimePrompt = HalftimePrompt(
+                round = b.round,
+                homeName = b.homeName,
+                awayName = b.awayName,
+                userIsHome = userIsHome,
+                userGoals = if (userIsHome) hg else ag,
+                oppGoals = if (userIsHome) ag else hg,
+                base = matchTacticsDraft ?: baseTactics(c),
+                squad = Roster.workingRoster(c, registry),
+                xi = matchXi(c, b.round),
+            )
+        } else {
+            val c = career ?: return
+            viewModelScope.launch {
+                val updated = withContext(Dispatchers.Default) { CareerEngine.revealNextRound(c, registry) }
+                matchTacticsDraft = null
+                career = updated
+                persist(updated)
+            }
+        }
+    }
+
+    // ─── Pre-kickoff tactics for the upcoming round ─────────────────────────
+    /** Editable formation/tactics for the *next* round's match. Null = use the
+     *  season default; reset after each round resolves. */
+    var matchTacticsDraft by mutableStateOf<SeasonTactics?>(null)
+        private set
+    val upcomingTactics: SeasonTactics? get() = career?.let { matchTacticsDraft ?: baseTactics(it) }
+
+    fun cyclePreFormation() {
+        val c = career ?: return
+        val base = matchTacticsDraft ?: baseTactics(c)
+        val next = cycle(base.formation)
+        matchTacticsDraft = base.copy(formation = next, xi = buildXiForFormation(c, next, upcomingXi))
+    }
+    fun cyclePreMentality() = setPre { it.copy(tactics = it.tactics.copy(mentality = cycle(it.tactics.mentality))) }
+    fun cyclePreTempo() = setPre { it.copy(tactics = it.tactics.copy(tempo = cycle(it.tactics.tempo))) }
+    fun cyclePrePressing() = setPre { it.copy(tactics = it.tactics.copy(pressing = cycle(it.tactics.pressing))) }
+    fun cyclePreWidth() = setPre { it.copy(tactics = it.tactics.copy(width = cycle(it.tactics.width))) }
+
+    private fun setPre(op: (SeasonTactics) -> SeasonTactics) {
+        val c = career ?: return
+        matchTacticsDraft = op(matchTacticsDraft ?: baseTactics(c))
+    }
+
+    // ─── Lineup (starting XI) — squad + the eleven for pre-match / pre-season ──
+    val lineupSquad: List<Player>
+        get() = career?.let { Roster.workingRoster(it, registry) } ?: emptyList()
+
+    /** Eleven for the upcoming round (pre-match draft, else current default) —
+     *  always normalized to the chosen formation (1 GK + valid composition). */
+    val upcomingXi: List<Int>
+        get() = career?.let { c ->
+            val t = matchTacticsDraft ?: baseTactics(c)
+            Roster.lineupFor(Roster.workingRoster(c, registry), t.formation, t.xi ?: emptyList())
+        } ?: emptyList()
+
+    /** Eleven for the season default (pre-season editor), normalized to its formation. */
+    val seasonXi: List<Int>
+        get() = career?.let { c ->
+            Roster.lineupFor(Roster.workingRoster(c, registry), baseTactics(c).formation, c.userTactics?.xi ?: emptyList())
+        } ?: emptyList()
+
+    fun setPreMatchXi(xi: List<Int>) = setPre { it.copy(xi = xi) }
+    fun setSeasonXi(xi: List<Int>) = setTac { it.copy(xi = xi) }
+
+    /** Best XI for [f], preferring [currentXi] — delegates to the shared
+     *  formation-aware lineup builder. */
+    private fun buildXiForFormation(c: Career, f: Formation, currentXi: List<Int>): List<Int> =
+        Roster.lineupFor(Roster.workingRoster(c, registry), f, currentXi)
+
+    /** The user's on-pitch eleven for [round] (roster + pre-match tactics applied)
+     *  — the starting point for half-time substitutions. */
+    private fun matchXi(c: Career, round: Int): List<Int> {
+        val pre = c.matchTactics[round] ?: c.userTactics
+        return Roster.effectiveTeam(registry.getValue(c.controlledTeamId), Roster.workingRoster(c, registry), pre).startingXi
+    }
 
     fun playNextRound() {
-        val c = career ?: return
-        if (CareerEngine.seasonComplete(c) || c.fired || halftimePrompt != null) return
-        val round = c.season.currentRoundIdx
+        val c0 = career ?: return
+        if (CareerEngine.seasonComplete(c0) || c0.fired || halftimePrompt != null || broadcast != null) return
+        val round = c0.season.currentRoundIdx
         viewModelScope.launch {
-            val fh = withContext(Dispatchers.Default) { CareerEngine.userFirstHalf(c, registry, round) }
-            if (fh == null) { // no user fixture (bye) — just advance
+            // Lock in any pre-kickoff tactic change for this round (re-simulates).
+            val base = baseTactics(c0)
+            val draft = matchTacticsDraft
+            val c = if (draft != null && draft != base) {
+                val withTac = withContext(Dispatchers.Default) { CareerEngine.setMatchTactics(c0, registry, round, draft) }
+                career = withTac; persist(withTac); withTac
+            } else c0
+            val match = withContext(Dispatchers.Default) { CareerEngine.userMatch(c, round) }
+            if (match == null) { // no user fixture (bye) — just advance
                 val updated = withContext(Dispatchers.Default) { CareerEngine.revealNextRound(c, registry) }
+                matchTacticsDraft = null
                 career = updated; persist(updated)
                 return@launch
             }
-            val (half, userIsHome) = fh
+            // Broadcast the first half live; the half-time card follows when it ends.
             pendingRound = round
-            halftimePrompt = HalftimePrompt(
+            pendingMatch = match
+            val (firstHalf, _) = splitAtHalfTime(match.events)
+            broadcast = Broadcast(
                 round = round,
-                homeName = half.homeName,
-                awayName = half.awayName,
-                userIsHome = userIsHome,
-                userGoals = if (userIsHome) half.homeGoals else half.awayGoals,
-                oppGoals = if (userIsHome) half.awayGoals else half.homeGoals,
-                base = baseTactics(c),
+                homeId = match.home, awayId = match.away,
+                homeName = teamName(match.home), awayName = teamName(match.away),
+                startMinute = 0, baselineHome = 0, baselineAway = 0,
+                events = firstHalf, secondHalf = false,
             )
         }
     }
 
-    /** Resolve the round: re-simulate the user's second half if they changed
-     *  tactics (else the default result stands), then advance + accrue cash. */
+    /** Resolve the interval: re-simulate the user's second half if they changed
+     *  tactics (else the default result stands), then broadcast it live. The round
+     *  advances when that second-half broadcast finishes ([onBroadcastDone]). */
     fun confirmHalftime(override: SeasonTactics?) {
         val c = career ?: return
         val round = pendingRound
-        val base = baseTactics(c)
+        val base = upcomingTactics ?: baseTactics(c)
         halftimePrompt = null
         viewModelScope.launch {
             var updated = c
             if (override != null && override != base) {
                 updated = withContext(Dispatchers.Default) { CareerEngine.applyHalftime(c, registry, round, override) }
+                career = updated; persist(updated)
             }
-            updated = withContext(Dispatchers.Default) { CareerEngine.revealNextRound(updated, registry) }
-            career = updated
-            persist(updated)
+            val match = withContext(Dispatchers.Default) { CareerEngine.userMatch(updated, round) } ?: return@launch
+            pendingMatch = match
+            val (_, secondHalf) = splitAtHalfTime(match.events)
+            val (hg, ag) = firstHalfGoals(match)
+            broadcast = Broadcast(
+                round = round,
+                homeId = match.home, awayId = match.away,
+                homeName = teamName(match.home), awayName = teamName(match.away),
+                startMinute = 45, baselineHome = hg, baselineAway = ag,
+                events = secondHalf, secondHalf = true,
+            )
         }
     }
 
@@ -167,9 +303,9 @@ class CareerViewModel(private val app: Application) : AndroidViewModel(app) {
     fun runMarketingCampaign() = mutate { CareerEngine.runMarketingCampaign(it) }
 
     // ─── Transfer market ────────────────────────────────────────────────────
-    /** The market opens between seasons so squad changes apply cleanly to the
-     *  next season's simulation (the current one is already played). */
-    val marketOpen: Boolean get() = seasonComplete && career?.fired == false
+    /** The squad market is open all season (except once fired): a buy/sell takes
+     *  effect from the current round and re-simulates the rounds still to play. */
+    val transfersOpen: Boolean get() = career?.fired == false
 
     val squad: List<Player>
         get() = career?.let { Roster.workingRoster(it, registry).sortedBy { p -> p.position.ordinal } } ?: emptyList()
@@ -183,23 +319,35 @@ class CareerViewModel(private val app: Application) : AndroidViewModel(app) {
         TransferMarket.scoutReport(p, career?.let { Roster.workingRoster(it, registry) } ?: emptyList())
 
     fun canBuy(p: Player): Boolean =
-        marketOpen && career?.let { TransferMarket.canBuy(it, registry, buyPrice(p)).ok } == true
+        transfersOpen && career?.let { TransferMarket.canBuy(it, registry, buyPrice(p)).ok } == true
     fun canSell(p: Player): Boolean =
-        marketOpen && career?.let { TransferMarket.canSell(it, registry, p.id).ok } == true
+        transfersOpen && career?.let { TransferMarket.canSell(it, registry, p.id).ok } == true
 
-    fun buy(p: Player) { if (marketOpen) mutate { TransferMarket.buy(it, registry, p) } }
-    fun sell(p: Player) { if (marketOpen) mutate { TransferMarket.sell(it, registry, p) } }
+    fun buy(p: Player) { if (transfersOpen) mutateRebuild { TransferMarket.buy(it, registry, p) } }
+    fun sell(p: Player) { if (transfersOpen) mutateRebuild { TransferMarket.sell(it, registry, p) } }
 
     val sessionTransfers: List<TransferRecord> get() = career?.transfers ?: emptyList()
     val lastSeasonTransfers: List<TransferRecord> get() = career?.history?.lastOrNull()?.transfers ?: emptyList()
 
     // ─── Pre-season tactics (gated to season end, applied next season) ──────
+    /** Between-seasons gate for the deals slate + pre-season tactics (these still
+     *  apply to next season's sim; the squad market, by contrast, is open now). */
+    val marketOpen: Boolean get() = seasonComplete && career?.fired == false
+
     private fun baseTactics(c: Career): SeasonTactics =
         c.userTactics ?: registry.getValue(c.controlledTeamId).let { SeasonTactics(it.formation, it.tactics) }
 
     val currentTactics: SeasonTactics? get() = career?.let { baseTactics(it) }
 
-    fun cycleFormation() = setTac { it.copy(formation = cycle(it.formation)) }
+    /** Cycling the formation rebuilds the XI to match its composition, so shape
+     *  and lineup stay consistent (no 4-3-3 squad crammed into a 4-5-2). */
+    fun cycleFormation() {
+        val c = career ?: return
+        if (!marketOpen) return
+        val base = baseTactics(c)
+        val next = cycle(base.formation)
+        mutate { CareerEngine.setTactics(it, base.copy(formation = next, xi = buildXiForFormation(c, next, seasonXi))) }
+    }
     fun cycleMentality() = setTac { it.copy(tactics = it.tactics.copy(mentality = cycle(it.tactics.mentality))) }
     fun cycleTempo() = setTac { it.copy(tactics = it.tactics.copy(tempo = cycle(it.tactics.tempo))) }
     fun cyclePressing() = setTac { it.copy(tactics = it.tactics.copy(pressing = cycle(it.tactics.pressing))) }
@@ -217,11 +365,30 @@ class CareerViewModel(private val app: Application) : AndroidViewModel(app) {
     val activeDeals: Deals? get() = career?.activeDeals
     fun signDeal(d: Deal) { if (marketOpen) mutate { CareerEngine.signDeal(it, d) } }
 
+    // ─── Dressing room (raise demands / poaching, resolved at the boundary) ──
+    val pendingDemands: List<dev.debene.gandula.career.Contracts.Demand> get() = career?.pendingDemands ?: emptyList()
+    val demandDecisions: Map<Int, Boolean> get() = career?.demandDecisions ?: emptyMap()
+    fun decideDemand(playerId: Int, accept: Boolean) {
+        if (marketOpen) mutate { CareerEngine.decideDemand(it, playerId, accept) }
+    }
+
     private fun mutate(op: (Career) -> Career) {
         val c = career ?: return
         val updated = op(c)
         career = updated
         persist(updated)
+    }
+
+    /** Apply a mutation that changes the squad/overlays, then re-simulate the
+     *  season off the main thread (only the user's remaining matches actually
+     *  change; already-revealed rounds and money are untouched). */
+    private fun mutateRebuild(op: (Career) -> Career) {
+        val c = career ?: return
+        viewModelScope.launch {
+            val updated = withContext(Dispatchers.Default) { CareerEngine.rebuildSeason(op(c), registry) }
+            career = updated
+            persist(updated)
+        }
     }
 
     fun advanceToNextSeason() {

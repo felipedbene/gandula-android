@@ -210,14 +210,22 @@ object Finances {
 
     fun seasonSalary(career: Career, registry: Map<Int, Team>): Long {
         if (career.controlledTeamId !in registry) return 0
-        // Effective squad (transfer overlay if any) — bought players cost wages.
-        return Roster.workingRoster(career, registry).sumOf { avgAttributes(it) * SALARY_PER_PLAYER_STRENGTH }
+        // Effective squad (transfer overlay if any) — bought players cost wages,
+        // each scaled by its contract multiplier (raises raise the bill).
+        return wageBill(Roster.workingRoster(career, registry), career.wageMultipliers)
     }
+
+    private fun wageBill(roster: List<Player>, mults: Map<Int, Double>): Long =
+        roster.sumOf { Contracts.playerWage(it, SALARY_PER_PLAYER_STRENGTH, mults[it.id] ?: 1.0) }
 
     fun salarySliceForRound(career: Career, registry: Map<Int, Team>, roundIdx: Int): Long {
         val total = totalRounds(career)
         if (total <= 0) return 0
-        return slicedSegment(seasonSalary(career, registry), roundIdx, 0, total)
+        // Wages reflect the squad as of this round — a mid-season buy bills only
+        // from its round forward, not retroactively.
+        if (career.controlledTeamId !in registry) return 0
+        val roster = Roster.rosterAtRound(Roster.seasonStartRoster(career, registry), career.transfers, roundIdx)
+        return slicedSegment(wageBill(roster, career.wageMultipliers), roundIdx, 0, total)
     }
 
     fun homeTicketForRound(career: Career, registry: Map<Int, Team>, roundIdx: Int): Long {

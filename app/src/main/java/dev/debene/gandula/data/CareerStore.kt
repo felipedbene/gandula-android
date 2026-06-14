@@ -46,6 +46,13 @@ object CareerStore {
         val transfers: List<TransferRecord> = emptyList(),
         // schema v4: half-time tactics overrides, keyed by round (string for JSON).
         val halftimeTactics: Map<String, SeasonTactics> = emptyMap(),
+        // schema v5: pre-kickoff per-round tactics; `userRoster` now means the
+        // season-START squad, with mid-season moves carried in `transfers`.
+        val matchTactics: Map<String, SeasonTactics> = emptyMap(),
+        // schema v6: contracts (wage multipliers) + pending dressing-room demands.
+        val wageMultipliers: Map<String, Double> = emptyMap(),
+        val pendingDemands: List<dev.debene.gandula.career.Contracts.Demand> = emptyList(),
+        val demandDecisions: Map<String, Boolean> = emptyMap(),
     )
 
     private val moshi = Moshi.Builder().build()
@@ -58,7 +65,7 @@ object CareerStore {
     fun save(context: Context, career: Career) {
         val s = career.season
         val saveData = CareerSave(
-            schemaVersion = 4,
+            schemaVersion = 6,
             seed = career.seed,
             controlledTeamId = career.controlledTeamId,
             money = career.money,
@@ -75,6 +82,10 @@ object CareerStore {
             activeDeals = career.activeDeals,
             transfers = career.transfers,
             halftimeTactics = career.halftimeTactics.mapKeys { it.key.toString() },
+            matchTactics = career.matchTactics.mapKeys { it.key.toString() },
+            wageMultipliers = career.wageMultipliers.mapKeys { it.key.toString() },
+            pendingDemands = career.pendingDemands,
+            demandDecisions = career.demandDecisions.mapKeys { it.key.toString() },
         )
         file(context).writeText(adapter.toJson(saveData))
     }
@@ -85,9 +96,11 @@ object CareerStore {
         if (!f.exists()) return null
         val saveData = runCatching { adapter.fromJson(f.readText()) }.getOrNull() ?: return null
         val halftime = saveData.halftimeTactics.mapKeys { it.key.toInt() }
+        val matchTactics = saveData.matchTactics.mapKeys { it.key.toInt() }
         val season = CareerEngine.buildSeason(
             saveData.seed, saveData.year, saveData.tierIds, registry,
-            saveData.controlledTeamId, saveData.userRoster, saveData.userTactics, halftime,
+            saveData.controlledTeamId, saveData.userRoster, saveData.userTactics,
+            saveData.transfers, matchTactics, halftime,
         ).copy(currentRoundIdx = saveData.currentRoundIdx)
         return Career(
             seed = saveData.seed,
@@ -103,7 +116,11 @@ object CareerStore {
             userTactics = saveData.userTactics,
             activeDeals = saveData.activeDeals,
             transfers = saveData.transfers,
+            matchTactics = matchTactics,
             halftimeTactics = halftime,
+            wageMultipliers = saveData.wageMultipliers.mapKeys { it.key.toInt() },
+            pendingDemands = saveData.pendingDemands,
+            demandDecisions = saveData.demandDecisions.mapKeys { it.key.toInt() },
         )
     }
 

@@ -68,6 +68,7 @@ class CareerScreenshotTest {
                         canCampaign = true,
                         copaStatus = "Eliminado na Fase de 32",
                         copaChampion = null,
+                        live = false,
                     ),
                     nameOf = nameOf,
                     onPlayRound = {},

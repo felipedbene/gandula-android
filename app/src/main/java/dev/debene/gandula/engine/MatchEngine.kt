@@ -163,11 +163,21 @@ object MatchEngine {
     /** Resume from the interval and run 46..90 + injury time. `home`/`away` supply
      *  tactics/formation (re-read every tick), so passing tactic-edited teams here
      *  is how a half-time change takes effect. Pass the same teams for no change. */
-    fun simulateSecondHalf(half: HalfTimeState, home: Team, away: Team): Match {
+    fun simulateSecondHalf(
+        half: HalfTimeState,
+        home: Team,
+        away: Team,
+        homeSubs: List<Pair<Int, Int>> = emptyList(),
+        awaySubs: List<Pair<Int, Int>> = emptyList(),
+    ): Match {
         val state = half.state
         state.home = home
         state.away = away
         val rng = half.rng
+        // User half-time substitutions (off id → on id), applied at the interval.
+        // Empty by default, so `simulate()` stays byte-identical / deterministic.
+        applyUserSubs(state, rng, Side.Home, homeSubs)
+        applyUserSubs(state, rng, Side.Away, awaySubs)
         for (minute in 46..90) {
             tick(state, rng, minute)
             runManagers(state, rng, minute)
@@ -638,6 +648,39 @@ object MatchEngine {
 
     private fun findOnField(team: Team, currentXi: IntArray, onField: BooleanArray, pos: Position): Int? =
         (0 until 11).firstOrNull { onField[it] && team.lookup(currentXi[it])?.position == pos }
+
+    /** Apply the user's chosen substitutions (off id → on id) to the live state,
+     *  honouring the per-match sub cap. A no-op for an empty list — that's what
+     *  keeps [simulate] and unchanged half-time decisions byte-identical. */
+    private fun applyUserSubs(
+        state: MatchState, rng: MatchRng, side: Side, subs: List<Pair<Int, Int>>, minute: Int = 45,
+    ) {
+        if (subs.isEmpty()) return
+        val team = state.teamFor(side)
+        val currentXi = if (side == Side.Home) state.homeCurrentXi else state.awayCurrentXi
+        val onField = if (side == Side.Home) state.homeOnField else state.awayOnField
+        val stamina = if (side == Side.Home) state.homeStamina else state.awayStamina
+        val benchUsed = if (side == Side.Home) state.homeBenchUsed else state.awayBenchUsed
+        for ((offId, onId) in subs) {
+            val used = if (side == Side.Home) state.homeSubsUsed else state.awaySubsUsed
+            if (used >= MAX_SUBS_PER_MATCH) break
+            val slot = (0 until 11).firstOrNull { onField[it] && currentXi[it] == offId } ?: continue
+            val inPlayer = team.lookup(onId) ?: continue
+            val offName = team.lookup(offId)?.name ?: continue
+            currentXi[slot] = onId
+            onField[slot] = true
+            stamina[slot] = inPlayer.attributes.stamina.toDouble()
+            val benchIdx = team.bench.indexOf(onId)
+            if (benchIdx in benchUsed.indices) benchUsed[benchIdx] = true
+            if (side == Side.Home) state.homeSubsUsed++ else state.awaySubsUsed++
+            state.events.add(
+                MatchEvent(
+                    minute, side, MatchEventKind.Substitution(offId, onId),
+                    Narration.substitution(rng, minute, team.name, offName, inPlayer.name),
+                ),
+            )
+        }
+    }
 
     private fun applySubstitution(
         state: MatchState, rng: MatchRng, side: Side, offSlot: Int, onBenchIdx: Int, minute: Int,

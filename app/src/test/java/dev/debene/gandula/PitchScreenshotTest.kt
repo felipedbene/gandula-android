@@ -1,25 +1,18 @@
 package dev.debene.gandula
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.Modifier
-import dev.debene.gandula.career.SeasonTactics
-import dev.debene.gandula.domain.Formation
-import dev.debene.gandula.domain.Mentality
-import dev.debene.gandula.domain.Pressing
-import dev.debene.gandula.domain.Tactics
-import dev.debene.gandula.domain.Team
-import dev.debene.gandula.domain.Tempo
-import dev.debene.gandula.domain.Width
-import dev.debene.gandula.ui.CareerViewModel
-import dev.debene.gandula.ui.HalftimeCard
-import dev.debene.ui.theme.MyApplicationTheme
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
+import dev.debene.gandula.domain.Team
+import dev.debene.gandula.ui.PitchLineupEditor
+import dev.debene.ui.theme.GlowBackground
+import dev.debene.ui.theme.MyApplicationTheme
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,11 +21,10 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
-/** Renders the live half-time decision card. */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = RobolectricDeviceQualifiers.Pixel8, sdk = [36])
-class HalftimeScreenshotTest {
+class PitchScreenshotTest {
 
     @get:Rule val composeTestRule = createComposeRule()
 
@@ -43,24 +35,21 @@ class HalftimeScreenshotTest {
     }
 
     @Test
-    fun halftime_card_screenshot() {
+    fun pitch_lineup_screenshot() {
         val team = loadTeams().first()
-        val prompt = CareerViewModel.HalftimePrompt(
-            round = 14,
-            homeName = "Esporte Fortalezense United",
-            awayName = "Tubarão EC",
-            userIsHome = true,
-            userGoals = 0,
-            oppGoals = 1,
-            base = SeasonTactics(Formation.F433, Tactics(Mentality.Balanced, Tempo.Normal, Pressing.Medium, Width.Normal)),
-            squad = team.roster,
-            xi = team.startingXi,
-        )
         composeTestRule.setContent {
             MyApplicationTheme {
-                HalftimeCard(prompt, onConfirm = {})
+                GlowBackground {
+                    PitchLineupEditor(
+                        squad = team.roster,
+                        xi = team.startingXi,
+                        formation = team.formation,
+                        onChange = {},
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
             }
         }
-        composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/gandula_halftime.png")
+        composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/gandula_pitch.png")
     }
 }

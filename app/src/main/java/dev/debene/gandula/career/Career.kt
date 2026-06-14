@@ -1,6 +1,7 @@
 package dev.debene.gandula.career
 
 import dev.debene.gandula.career.Divisions.tierName
+import dev.debene.gandula.domain.Match
 import dev.debene.gandula.domain.Player
 import dev.debene.gandula.domain.Team
 import dev.debene.gandula.engine.MatchEngine
@@ -64,18 +65,31 @@ data class Career(
     val season: Season,
     val history: List<SeasonHistory>,
     val fired: Boolean = false,
-    /** Transfer-market squad overlay. Empty = use the registry default. */
+    /** The squad the season *started* with. Empty = use the registry default.
+     *  Mid-season buys/sells are layered on via [transfers], not by mutating this. */
     val userRoster: List<Player> = emptyList(),
     /** Season tactical overlay (formation + tactics). Null = registry default. */
     val userTactics: SeasonTactics? = null,
     /** Signed TV/sponsorship deals that override the income floors. */
     val activeDeals: Deals? = null,
-    /** Transfers made this season (reset at the boundary into history). */
+    /** Transfers made this season, each tagged with the round it took effect and a
+     *  player snapshot (reset at the boundary into history). Drives the mid-season
+     *  roster timeline ([Roster.rosterAtRound]) and is re-simulated on load. */
     val transfers: List<TransferRecord> = emptyList(),
+    /** Pre-kickoff tactical changes the user set for a specific league round. The
+     *  user's match in that round is simulated with these tactics from minute 0. */
+    val matchTactics: Map<Int, SeasonTactics> = emptyMap(),
     /** Half-time tactical changes the user confirmed, keyed by league round. The
-     *  user's match in that round is re-simulated with these second-half tactics;
-     *  persisted so a reload reproduces the steered result. */
+     *  user's match in that round has its second half re-simulated with these
+     *  tactics; persisted so a reload reproduces the steered result. */
     val halftimeTactics: Map<Int, SeasonTactics> = emptyMap(),
+    /** Per-player wage multiplier from signed raises (default 1.0). */
+    val wageMultipliers: Map<Int, Double> = emptyMap(),
+    /** Raise/poach demands raised when the season completed, awaiting the user's
+     *  decision; resolved at the boundary. */
+    val pendingDemands: List<Contracts.Demand> = emptyList(),
+    /** The user's accept/refuse decision per demand (playerId → accepted). */
+    val demandDecisions: Map<Int, Boolean> = emptyMap(),
 )
 
 /**
@@ -109,10 +123,18 @@ object CareerEngine {
         if (seasonComplete(career)) return career
         val round = career.season.currentRoundIdx
         val money = career.money + Finances.roundCashDelta(career, registry, round)
-        val updated = career.copy(
+        var updated = career.copy(
             money = money,
             season = career.season.copy(currentRoundIdx = round + 1),
         )
+        // The reveal that completes the season raises the dressing-room demands.
+        if (seasonComplete(updated) && updated.pendingDemands.isEmpty()) {
+            updated = updated.copy(
+                pendingDemands = Contracts.endOfSeasonDemands(
+                    updated.seed, updated.season.year, Roster.workingRoster(updated, registry), updated.wageMultipliers,
+                ),
+            )
+        }
         return if (Finances.isManagerFired(money)) updated.copy(fired = true) else updated
     }
 
@@ -188,14 +210,19 @@ object CareerEngine {
         tierIds: List<List<Int>>,
         registry: Map<Int, Team>,
         controlledTeamId: Int,
-        userRoster: List<Player>,
+        seasonStartRoster: List<Player>,
         userTactics: SeasonTactics? = null,
+        transfers: List<TransferRecord> = emptyList(),
+        matchTactics: Map<Int, SeasonTactics> = emptyMap(),
         halftimeTactics: Map<Int, SeasonTactics> = emptyMap(),
     ): Season {
         val sSeed = seasonSeed(careerSeed, year)
         fun resolve(id: Int, tier: Int): Team =
-            resolveTeam(careerSeed, year, registry, controlledTeamId, userRoster, userTactics, id, tier)
+            resolveTeam(careerSeed, year, registry, controlledTeamId, seasonStartRoster, userTactics, id, tier)
 
+        // Base pass: every side at its season-start strength/tactics. The user's
+        // matches are then patched per-round for transfers / pre-match / half-time
+        // overrides. With no overrides the patch is a no-op (byte-identical).
         val allResolved = ArrayList<Team>(Divisions.WORLD_SIZE)
         var divisions = tierIds.mapIndexed { i, ids ->
             val tier = i + 1
@@ -204,58 +231,105 @@ object CareerEngine {
             val record = SeasonEngine.simulateSeason(teams, divSeed(sSeed, tier), tierName(tier))
             Division(tier, tierName(tier), ids, record)
         }
-        // Re-simulate the user's second halves where a half-time change was made.
-        if (halftimeTactics.isNotEmpty()) {
-            val userTierIdx = tierIds.indexOfFirst { controlledTeamId in it }
-            if (userTierIdx >= 0) {
-                divisions = divisions.toMutableList().also {
-                    it[userTierIdx] = patchHalftime(
-                        it[userTierIdx], sSeed, ::resolve, controlledTeamId, userRoster, userTactics, registry, careerSeed, year, halftimeTactics,
-                    )
-                }
+        val userTierIdx = tierIds.indexOfFirst { controlledTeamId in it }
+        if (userTierIdx >= 0 && (transfers.isNotEmpty() || matchTactics.isNotEmpty() || halftimeTactics.isNotEmpty())) {
+            divisions = divisions.toMutableList().also {
+                it[userTierIdx] = patchUserMatches(
+                    it[userTierIdx], sSeed, registry, careerSeed, year, controlledTeamId,
+                    seasonStartRoster, userTactics, transfers, matchTactics, halftimeTactics,
+                )
             }
         }
-        // The Copa fields the same evolved/coached sides the league does.
+        // The Copa fields the season-start squad (cup registration is fixed at the
+        // start of the season; mid-season transfers strengthen the league run only).
         val copa = Copa.simulate(allResolved, sSeed, controlledTeamId)
         return Season(year, sSeed, divisions, currentRoundIdx = 0, copa = copa)
     }
 
-    /** Replace the user's matches in `division` for any round with a half-time
-     *  override: re-run the first half (identical), then the second half with the
-     *  user's edited tactics, and recompute the standings. */
-    private fun patchHalftime(
+    /** Re-derive a season's divisions/Copa from the current overlays, preserving
+     *  the reveal cursor. Every mid-season action (transfer, pre-match/half-time
+     *  tactics) routes through this — it IS the deterministic replay. */
+    fun rebuildSeason(career: Career, registry: Map<Int, Team>): Career {
+        val s = career.season
+        val rebuilt = buildSeason(
+            career.seed, s.year, s.divisions.map { it.teamIds }, registry,
+            career.controlledTeamId, career.userRoster, career.userTactics,
+            career.transfers, career.matchTactics, career.halftimeTactics,
+        ).copy(currentRoundIdx = s.currentRoundIdx)
+        return career.copy(season = rebuilt)
+    }
+
+    /** Replace the user's matches in `division` to reflect, per round: the squad
+     *  at that round ([Roster.rosterAtRound]), a pre-kickoff tactic override
+     *  (`matchTactics`), and/or a half-time second-half override. Rounds with no
+     *  change are left exactly as the base pass produced them. */
+    private fun patchUserMatches(
         division: Division,
         sSeed: Long,
-        resolve: (Int, Int) -> Team,
-        controlledTeamId: Int,
-        userRoster: List<Player>,
-        userTactics: SeasonTactics?,
         registry: Map<Int, Team>,
         careerSeed: Long,
         year: Int,
+        controlledTeamId: Int,
+        seasonStartRoster: List<Player>,
+        userTactics: SeasonTactics?,
+        transfers: List<TransferRecord>,
+        matchTactics: Map<Int, SeasonTactics>,
         halftimeTactics: Map<Int, SeasonTactics>,
     ): Division {
         val rec = division.record
         val dSeed = divSeed(sSeed, division.tier)
+        val base = if (seasonStartRoster.isEmpty()) registry.getValue(controlledTeamId).roster else seasonStartRoster
         val matches = rec.matches.toMutableList()
+        var changed = false
         rec.fixtures.forEachIndexed { i, f ->
-            val override = halftimeTactics[f.round] ?: return@forEachIndexed
             val homeId = division.teamIds[f.homeIdx]
             val awayId = division.teamIds[f.awayIdx]
             if (homeId != controlledTeamId && awayId != controlledTeamId) return@forEachIndexed
-            val homeTeam = resolve(homeId, division.tier)
-            val awayTeam = resolve(awayId, division.tier)
-            val half = MatchEngine.simulateFirstHalf(homeTeam, awayTeam, SeasonEngine.matchSeed(dSeed, i))
-            val editedHome = if (homeId == controlledTeamId) applyTactics(homeTeam, override) else homeTeam
-            val editedAway = if (awayId == controlledTeamId) applyTactics(awayTeam, override) else awayTeam
-            matches[i] = MatchEngine.simulateSecondHalf(half, editedHome, editedAway)
+            val roster = Roster.rosterAtRound(base, transfers, f.round)
+            val pre = matchTactics[f.round]
+            val ht = halftimeTactics[f.round]
+            // No change vs the base pass (season-start roster + season tactics, full match)?
+            if (roster === base && pre == null && ht == null) return@forEachIndexed
+            changed = true
+            val opp = if (homeId == controlledTeamId) awayId else homeId
+            val oppTeam = resolveTeam(careerSeed, year, registry, controlledTeamId, seasonStartRoster, userTactics, opp, division.tier)
+            val userTeam = Roster.effectiveTeam(registry.getValue(controlledTeamId), roster, pre ?: userTactics)
+            val homeTeam = if (homeId == controlledTeamId) userTeam else oppTeam
+            val awayTeam = if (awayId == controlledTeamId) userTeam else oppTeam
+            val seed = SeasonEngine.matchSeed(dSeed, i)
+            matches[i] = if (ht == null) {
+                MatchEngine.simulate(homeTeam, awayTeam, seed)
+            } else {
+                val half = MatchEngine.simulateFirstHalf(homeTeam, awayTeam, seed)
+                val eHome = if (homeId == controlledTeamId) applyTactics(homeTeam, ht) else homeTeam
+                val eAway = if (awayId == controlledTeamId) applyTactics(awayTeam, ht) else awayTeam
+                // A half-time XI edit becomes substitutions on the user's side.
+                val subs = computeSubs(userTeam.startingXi, ht.xi)
+                MatchEngine.simulateSecondHalf(
+                    half, eHome, eAway,
+                    homeSubs = if (homeId == controlledTeamId) subs else emptyList(),
+                    awaySubs = if (awayId == controlledTeamId) subs else emptyList(),
+                )
+            }
         }
+        if (!changed) return division
         val standings = SeasonEngine.computeStandings(division.teamIds, rec.fixtures, matches, Int.MAX_VALUE)
         return division.copy(record = rec.copy(matches = matches, standings = standings))
     }
 
     private fun applyTactics(team: Team, t: SeasonTactics): Team =
         team.copy(formation = t.formation, tactics = t.tactics)
+
+    /** Substitutions implied by a half-time XI edit: each starter dropped from the
+     *  new eleven ([h1xi] − [h2xi]) paired, in order, with a player brought on. */
+    private fun computeSubs(h1xi: List<Int>, h2xi: List<Int>?): List<Pair<Int, Int>> {
+        if (h2xi == null) return emptyList()
+        val h2set = h2xi.toSet()
+        val h1set = h1xi.toSet()
+        val off = h1xi.filter { it !in h2set }
+        val on = h2xi.filter { it !in h1set }
+        return off.zip(on)
+    }
 
     // ─── Advance to next season (apply P/R, record history, money) ───────────
     fun advanceSeason(career: Career, registry: Map<Int, Team>): Career {
@@ -271,10 +345,18 @@ object CareerEngine {
         val userStats = userDiv.record.standings[userPos - 1]
         val champion = userDiv.record.standings[0]
 
+        // Resolve the dressing room: signed raises bump contracts; refused
+        // mercenaries (and poached players sold) leave with a fee; snubbed loyal
+        // players sulk. Applied to the squad that carries into next season.
+        val resolution = Contracts.resolve(
+            Roster.workingRoster(career, registry), career.wageMultipliers, career.pendingDemands, career.demandDecisions,
+        )
+
         // Per-round cash already accrued into money during the season; the
-        // boundary pieces (placement prize + P/R bonus + Copa prize) are new money.
+        // boundary pieces (placement prize + P/R bonus + Copa prize + sale fees)
+        // are new money.
         val finances = Finances.computeSeasonFinances(career, registry, outcome)
-        val moneyAfter = career.money + finances.prBonus + finances.placementPrize + finances.cupPrize
+        val moneyAfter = career.money + finances.prBonus + finances.placementPrize + finances.cupPrize + resolution.feesEarned
         val history = SeasonHistory(
             year = s.year,
             userTier = userDiv.tier,
@@ -306,7 +388,7 @@ object CareerEngine {
         // result is persisted as the new userRoster and simulated against.
         val nextYearOffset = (s.year + 1) - FIRST_YEAR
         val agedUserRoster = Regen.evolveRoster(
-            Roster.workingRoster(career, registry), career.seed, career.controlledTeamId, nextYearOffset,
+            resolution.roster, career.seed, career.controlledTeamId, nextYearOffset,
         )
 
         // Carry signed deals forward, dropping any that expire / fail their
@@ -337,8 +419,15 @@ object CareerEngine {
             userTactics = career.userTactics,
             activeDeals = nextDeals,
             transfers = emptyList(), // fresh season's market is empty
+            wageMultipliers = resolution.multipliers,
+            pendingDemands = emptyList(),
+            demandDecisions = emptyMap(),
         )
     }
+
+    /** Record the user's accept/refuse decision for a pending demand. */
+    fun decideDemand(career: Career, playerId: Int, accept: Boolean): Career =
+        career.copy(demandDecisions = career.demandDecisions + (playerId to accept))
 
     // ─── Half-time (live, per-match second-half tactics) ─────────────────────
     /** The user's first half for [round] (deterministic — identical to the
@@ -348,39 +437,49 @@ object CareerEngine {
         val s = career.season
         val div = userDivision(s, career.controlledTeamId)
         val dSeed = divSeed(s.seed, div.tier)
+        val base = if (career.userRoster.isEmpty()) registry.getValue(career.controlledTeamId).roster else career.userRoster
         div.record.fixtures.forEachIndexed { i, f ->
             if (f.round != round) return@forEachIndexed
             val homeId = div.teamIds[f.homeIdx]
             val awayId = div.teamIds[f.awayIdx]
             if (homeId != career.controlledTeamId && awayId != career.controlledTeamId) return@forEachIndexed
-            val homeTeam = resolveTeam(career.seed, s.year, registry, career.controlledTeamId, career.userRoster, career.userTactics, homeId, div.tier)
-            val awayTeam = resolveTeam(career.seed, s.year, registry, career.controlledTeamId, career.userRoster, career.userTactics, awayId, div.tier)
+            // Field the squad + pre-kickoff tactics in effect for this round.
+            val roster = Roster.rosterAtRound(base, career.transfers, round)
+            val pre = career.matchTactics[round] ?: career.userTactics
+            val userTeam = Roster.effectiveTeam(registry.getValue(career.controlledTeamId), roster, pre)
+            val opp = if (homeId == career.controlledTeamId) awayId else homeId
+            val oppTeam = resolveTeam(career.seed, s.year, registry, career.controlledTeamId, career.userRoster, career.userTactics, opp, div.tier)
+            val homeTeam = if (homeId == career.controlledTeamId) userTeam else oppTeam
+            val awayTeam = if (awayId == career.controlledTeamId) userTeam else oppTeam
             val half = MatchEngine.simulateFirstHalf(homeTeam, awayTeam, SeasonEngine.matchSeed(dSeed, i))
             return half to (homeId == career.controlledTeamId)
         }
         return null
     }
 
-    /** Record a half-time tactics change for [round] and re-simulate the user's
-     *  second half, patching the record + standings. Persisted so a reload
-     *  reproduces the steered match. */
-    fun applyHalftime(career: Career, registry: Map<Int, Team>, round: Int, override: SeasonTactics): Career {
+    /** The user's resolved match for [round] (from the current record), or null on
+     *  a bye. Used to broadcast the match minute-by-minute. */
+    fun userMatch(career: Career, round: Int): Match? {
         val s = career.season
-        val userTierIdx = s.divisions.indexOfFirst { career.controlledTeamId in it.teamIds }
-        if (userTierIdx < 0) return career
-        val resolve = { id: Int, tier: Int ->
-            resolveTeam(career.seed, s.year, registry, career.controlledTeamId, career.userRoster, career.userTactics, id, tier)
+        val div = userDivision(s, career.controlledTeamId)
+        div.record.fixtures.forEachIndexed { i, f ->
+            if (f.round != round) return@forEachIndexed
+            val homeId = div.teamIds[f.homeIdx]
+            val awayId = div.teamIds[f.awayIdx]
+            if (homeId == career.controlledTeamId || awayId == career.controlledTeamId) return div.record.matches[i]
         }
-        val patched = patchHalftime(
-            s.divisions[userTierIdx], s.seed, resolve, career.controlledTeamId,
-            career.userRoster, career.userTactics, registry, career.seed, s.year, mapOf(round to override),
-        )
-        val divisions = s.divisions.toMutableList().also { it[userTierIdx] = patched }
-        return career.copy(
-            season = s.copy(divisions = divisions),
-            halftimeTactics = career.halftimeTactics + (round to override),
-        )
+        return null
     }
+
+    /** Record a pre-kickoff tactics change for [round] (takes effect from minute 0
+     *  of the user's match that round) and re-simulate. */
+    fun setMatchTactics(career: Career, registry: Map<Int, Team>, round: Int, tactics: SeasonTactics): Career =
+        rebuildSeason(career.copy(matchTactics = career.matchTactics + (round to tactics)), registry)
+
+    /** Record a half-time tactics change for [round] and re-simulate. Persisted so
+     *  a reload reproduces the steered match. */
+    fun applyHalftime(career: Career, registry: Map<Int, Team>, round: Int, override: SeasonTactics): Career =
+        rebuildSeason(career.copy(halftimeTactics = career.halftimeTactics + (round to override)), registry)
 
     // ─── Pre-season actions (set tactics / sign deals; gated to season end) ───
     fun setTactics(career: Career, tactics: SeasonTactics): Career = career.copy(userTactics = tactics)

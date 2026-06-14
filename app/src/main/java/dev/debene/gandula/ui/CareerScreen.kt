@@ -1,6 +1,7 @@
 package dev.debene.gandula.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,7 +39,13 @@ import dev.debene.gandula.career.Finances
 import dev.debene.gandula.career.SeasonHistory
 import dev.debene.gandula.career.UserOutcome
 import dev.debene.gandula.engine.TeamStats
-
+import androidx.compose.ui.graphics.Brush
+import dev.debene.ui.theme.GradientStart
+import dev.debene.ui.theme.GradientEnd
+import dev.debene.ui.theme.NeonCyan
+import dev.debene.ui.theme.GlassBody
+import dev.debene.ui.theme.GlassBorder
+import androidx.compose.foundation.border
 /** Flat, immutable view-model snapshot for the (stateless) career screen. */
 data class CareerUi(
     val club: String,
@@ -62,6 +69,9 @@ data class CareerUi(
     val canCampaign: Boolean,
     val copaStatus: String,
     val copaChampion: String?,
+    /** A match is being broadcast live or the half-time card is up — hide the
+     *  "play round" / pre-match controls until it resolves. */
+    val live: Boolean,
 )
 
 @Composable
@@ -100,6 +110,7 @@ fun CareerScreen(modifier: Modifier = Modifier, vm: CareerViewModel = viewModel(
             canCampaign = vm.canCampaign,
             copaStatus = vm.copaStatus,
             copaChampion = vm.copaChampionName,
+            live = vm.broadcast != null || vm.halftimePrompt != null,
         ),
         nameOf = vm::teamName,
         onPlayRound = vm::playNextRound,
@@ -109,8 +120,117 @@ fun CareerScreen(modifier: Modifier = Modifier, vm: CareerViewModel = viewModel(
         onCampaign = vm::runMarketingCampaign,
         modifier = modifier,
         preSeason = { PreSeasonSection(vm) },
+        preMatch = {
+            if (!vm.seasonComplete && !career.fired) PreMatchSection(vm)
+        },
+        broadcast = {
+            vm.broadcast?.let { b ->
+                MatchBroadcast(
+                    homeName = b.homeName, homeId = b.homeId,
+                    awayName = b.awayName, awayId = b.awayId,
+                    events = b.events,
+                    startMinute = b.startMinute,
+                    baselineHome = b.baselineHome,
+                    baselineAway = b.baselineAway,
+                    onDone = vm::onBroadcastDone,
+                )
+            }
+        },
         halftime = { vm.halftimePrompt?.let { HalftimeCard(it, vm::confirmHalftime) } },
     )
+}
+
+/** Header built from the shared career view-model (reused by every career sub-screen). */
+@Composable
+private fun CareerHeaderFrom(vm: CareerViewModel) {
+    val c = vm.career ?: return
+    val div = vm.userDivision ?: return
+    CareerHeader(vm.teamName(c.controlledTeamId), div.name, c.season.year, c.money, c.fanbase, c.stadiumCapacity, c.season.currentRoundIdx, vm.totalRounds)
+}
+
+@Composable
+private fun CareerLoadingOr(vm: CareerViewModel, content: @Composable () -> Unit) {
+    if (vm.loading || vm.career == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+    } else {
+        content()
+    }
+}
+
+/** "Tabela" destination: Copa + the league standings. */
+@Composable
+fun CareerTableScreen(modifier: Modifier = Modifier, vm: CareerViewModel = viewModel()) {
+    CareerLoadingOr(vm) {
+        val career = vm.career ?: return@CareerLoadingOr
+        Column(
+            modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CareerHeaderFrom(vm)
+            CopaCard(vm.copaStatus, vm.copaChampionName)
+            HorizontalDivider()
+            StandingsTable(vm.userStandings, career.controlledTeamId, vm::teamName, Modifier.fillMaxWidth())
+            career.history.lastOrNull()?.let { LastSeasonLine(it) }
+        }
+    }
+}
+
+/** "Finanças" destination: ledger, runway, stadium/marketing levers. */
+@Composable
+fun CareerFinanceScreen(modifier: Modifier = Modifier, vm: CareerViewModel = viewModel()) {
+    CareerLoadingOr(vm) {
+        val career = vm.career ?: return@CareerLoadingOr
+        Column(
+            modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CareerHeaderFrom(vm)
+            if (!career.fired) {
+                FinancesCard(vm.ledger, vm.runway, vm.expansionCost, vm.marketingCost, vm.canExpand, vm.canCampaign, vm::expandStadium, vm::runMarketingCampaign)
+            }
+            career.history.lastOrNull()?.let { LastSeasonLine(it) }
+        }
+    }
+}
+
+@Composable
+private fun PreMatchSection(vm: CareerViewModel) {
+    val t = vm.upcomingTactics ?: return
+    val round = vm.career?.season?.currentRoundIdx ?: return
+    Card(colors = CardDefaults.cardColors(containerColor = GlassBody), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().border(1.dp, GlassBorder, RoundedCornerShape(16.dp))) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Tática — rodada ${round + 1}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            TacticRow("Formação", t.formation.ptLabel(), vm::cyclePreFormation)
+            TacticRow("Mentalidade", t.tactics.mentality.ptLabel(), vm::cyclePreMentality)
+            TacticRow("Ritmo", t.tactics.tempo.ptLabel(), vm::cyclePreTempo)
+            TacticRow("Pressão", t.tactics.pressing.ptLabel(), vm::cyclePrePressing)
+            TacticRow("Largura", t.tactics.width.ptLabel(), vm::cyclePreWidth)
+            LineupExpander(vm.lineupSquad, vm.upcomingXi, t.formation, vm::setPreMatchXi)
+        }
+    }
+}
+
+/** Collapsible starting-XI editor — shared by the pre-match and pre-season cards. */
+@Composable
+private fun LineupExpander(
+    squad: List<dev.debene.gandula.domain.Player>,
+    xi: List<Int>,
+    formation: dev.debene.gandula.domain.Formation,
+    onChange: (List<Int>) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .clickable { open = !open }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text("Escalação (titulares)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Text(if (open) "▴" else "▾", style = MaterialTheme.typography.labelMedium)
+    }
+    if (open) PitchLineupEditor(squad, xi, formation, onChange)
 }
 
 @Composable
@@ -120,6 +240,8 @@ internal fun HalftimeCard(prompt: CareerViewModel.HalftimePrompt, onConfirm: (de
     var tempo by remember(prompt) { mutableStateOf(prompt.base.tactics.tempo) }
     var pressing by remember(prompt) { mutableStateOf(prompt.base.tactics.pressing) }
     var width by remember(prompt) { mutableStateOf(prompt.base.tactics.width) }
+    var xi by remember(prompt) { mutableStateOf(prompt.xi) }
+    val subCount = prompt.xi.count { it !in xi.toSet() }
 
     val homeScore = if (prompt.userIsHome) prompt.userGoals else prompt.oppGoals
     val awayScore = if (prompt.userIsHome) prompt.oppGoals else prompt.userGoals
@@ -133,14 +255,27 @@ internal fun HalftimeCard(prompt: CareerViewModel.HalftimePrompt, onConfirm: (de
                 modifier = Modifier.fillMaxWidth(),
             )
             Text("Ajuste a tática para o 2º tempo:", style = MaterialTheme.typography.labelMedium)
-            TacticRow("Formação", formation.name) { formation = cycleEnum(formation) }
-            TacticRow("Mentalidade", mentality.name) { mentality = cycleEnum(mentality) }
-            TacticRow("Ritmo", tempo.name) { tempo = cycleEnum(tempo) }
-            TacticRow("Pressão", pressing.name) { pressing = cycleEnum(pressing) }
-            TacticRow("Largura", width.name) { width = cycleEnum(width) }
+            TacticRow("Formação", formation.ptLabel()) { formation = cycleEnum(formation) }
+            TacticRow("Mentalidade", mentality.ptLabel()) { mentality = cycleEnum(mentality) }
+            TacticRow("Ritmo", tempo.ptLabel()) { tempo = cycleEnum(tempo) }
+            TacticRow("Pressão", pressing.ptLabel()) { pressing = cycleEnum(pressing) }
+            TacticRow("Largura", width.ptLabel()) { width = cycleEnum(width) }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Text(
+                "Substituições" + if (subCount > 0) " — $subCount/3" else " (até 3)",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            PitchLineupEditor(prompt.squad, xi, formation, onChange = { if (prompt.xi.count { id -> id !in it.toSet() } <= 3) xi = it })
             Button(
                 onClick = {
-                    onConfirm(dev.debene.gandula.career.SeasonTactics(formation, dev.debene.gandula.domain.Tactics(mentality, tempo, pressing, width)))
+                    onConfirm(
+                        dev.debene.gandula.career.SeasonTactics(
+                            formation,
+                            dev.debene.gandula.domain.Tactics(mentality, tempo, pressing, width),
+                            xi = if (xi != prompt.xi) xi else null,
+                        ),
+                    )
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Seguir para o 2º tempo") }
@@ -156,16 +291,18 @@ private inline fun <reified E : Enum<E>> cycleEnum(e: E): E {
 @Composable
 private fun PreSeasonSection(vm: CareerViewModel) {
     val t = vm.currentTactics ?: return
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(colors = CardDefaults.cardColors(containerColor = GlassBody), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().border(1.dp, GlassBorder, RoundedCornerShape(16.dp))) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Pré-temporada — tática", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            TacticRow("Formação", t.formation.name, vm::cycleFormation)
-            TacticRow("Mentalidade", t.tactics.mentality.name, vm::cycleMentality)
-            TacticRow("Ritmo", t.tactics.tempo.name, vm::cycleTempo)
-            TacticRow("Pressão", t.tactics.pressing.name, vm::cyclePressing)
-            TacticRow("Largura", t.tactics.width.name, vm::cycleWidth)
+            TacticRow("Formação", t.formation.ptLabel(), vm::cycleFormation)
+            TacticRow("Mentalidade", t.tactics.mentality.ptLabel(), vm::cycleMentality)
+            TacticRow("Ritmo", t.tactics.tempo.ptLabel(), vm::cycleTempo)
+            TacticRow("Pressão", t.tactics.pressing.ptLabel(), vm::cyclePressing)
+            TacticRow("Largura", t.tactics.width.ptLabel(), vm::cycleWidth)
+            LineupExpander(vm.lineupSquad, vm.seasonXi, t.formation, vm::setSeasonXi)
         }
     }
+    DemandsCard(vm)
     DealsCard(vm)
 }
 
@@ -183,8 +320,62 @@ private fun TacticRow(label: String, value: String, onCycle: () -> Unit) {
 }
 
 @Composable
+private fun DemandsCard(vm: CareerViewModel) {
+    val demands = vm.pendingDemands
+    if (demands.isEmpty()) return
+    val decisions = vm.demandDecisions
+    Card(colors = CardDefaults.cardColors(containerColor = GlassBody), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().border(1.dp, GlassBorder, RoundedCornerShape(16.dp))) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Vestiário — pedidos", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text(
+                "Decida antes da próxima temporada. Sem decisão = recusa.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            demands.forEach { d ->
+                val poach = d.kind == "poach"
+                val pct = ((d.targetMult - d.currentMult) * 100).toInt()
+                val decision = decisions[d.playerId]
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "${d.position.name} ${d.playerName} (${d.overall})" + if (d.mercenary) " · mercenário" else " · leal",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        if (poach) "Proposta de fora: ${formatMoney(d.fee)} — segurar (+$pct% salário) ou vender?"
+                        else "Quer +$pct% de salário." + if (d.mercenary) " Recusar → vai embora (${formatMoney(d.fee)})." else " Recusar → desmotiva.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val acceptLabel = if (poach) "Segurar" else "Aceitar"
+                        val refuseLabel = if (poach || d.mercenary) "Vender" else "Recusar"
+                        DecisionButton(acceptLabel, selected = decision == true, Modifier.weight(1f)) { vm.decideDemand(d.playerId, true) }
+                        DecisionButton(refuseLabel, selected = decision == false, Modifier.weight(1f)) { vm.decideDemand(d.playerId, false) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DecisionButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp)) {
+            Text(label, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp)) {
+            Text(label, fontSize = 13.sp)
+        }
+    }
+}
+
+@Composable
 private fun DealsCard(vm: CareerViewModel) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(colors = CardDefaults.cardColors(containerColor = GlassBody), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().border(1.dp, GlassBorder, RoundedCornerShape(16.dp))) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Contratos (valem na próxima temporada)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             vm.activeDeals?.tv?.let { Text("TV assinado: ${formatMoney(it.seasonAmount)}", style = MaterialTheme.typography.labelMedium) }
@@ -227,6 +418,8 @@ fun CareerScreenContent(
     onCampaign: () -> Unit,
     modifier: Modifier = Modifier,
     preSeason: @Composable () -> Unit = {},
+    preMatch: @Composable () -> Unit = {},
+    broadcast: @Composable () -> Unit = {},
     halftime: @Composable () -> Unit = {},
 ) {
     Column(
@@ -235,6 +428,7 @@ fun CareerScreenContent(
     ) {
         CareerHeader(ui.club, ui.division, ui.year, ui.money, ui.fanbase, ui.stadiumCapacity, ui.round, ui.total)
 
+        broadcast()
         halftime()
 
         when {
@@ -246,39 +440,48 @@ fun CareerScreenContent(
                 championName = nameOf(ui.standings.firstOrNull()?.teamId ?: -1),
                 onNext = onNextSeason,
             )
-            else -> Button(onClick = onPlayRound, modifier = Modifier.fillMaxWidth()) {
-                Text(if (ui.round == 0) "Começar temporada" else "Jogar rodada ${ui.round + 1}")
+            ui.live -> Unit // the broadcast / half-time card above owns the screen
+            else -> {
+                preMatch()
+                Button(onClick = onPlayRound, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (ui.round == 0) "Começar temporada" else "Jogar rodada ${ui.round + 1}")
+                }
             }
         }
 
         if (ui.seasonComplete && !ui.fired) preSeason()
 
-        CopaCard(ui.copaStatus, ui.copaChampion)
-
-        if (!ui.fired) {
-            FinancesCard(ui, onExpand, onCampaign)
-        }
-        ui.lastSeason?.let { LastSeasonLine(it) }
-
-        HorizontalDivider()
-        StandingsTable(ui.standings, ui.controlledTeamId, nameOf, Modifier.fillMaxWidth())
-
+        // Finanças, Copa and the league table live in their own bottom-nav
+        // destinations now — this screen stays focused on the next match.
         OutlinedButton(onClick = onRestart) { Text("Nova carreira") }
     }
 }
 
 @Composable
 private fun CareerHeader(club: String, division: String, year: Int, money: Long, fanbase: Int, capacity: Int, round: Int, total: Int) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(club, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("$division · $year · Rodada $round/$total", style = MaterialTheme.typography.bodyMedium)
-            Text(
-                "Caixa: ${formatMoney(money)}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text("Torcida ${formatPlain(fanbase)} · Estádio ${formatPlain(capacity)} lug.", style = MaterialTheme.typography.labelMedium)
+    val gradient = Brush.linearGradient(colors = listOf(GradientStart, GradientEnd))
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().background(gradient).padding(20.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(club, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = androidx.compose.ui.graphics.Color.White)
+                Text("$division · $year · Rodada $round/$total", style = MaterialTheme.typography.bodyMedium, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f))
+                val animatedMoney by androidx.compose.animation.core.animateIntAsState(
+                    targetValue = money.toInt(),
+                    animationSpec = androidx.compose.animation.core.tween(700),
+                    label = "caixa",
+                )
+                Text(
+                    "Caixa: ${formatMoney(animatedMoney.toLong())}",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = NeonCyan,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                Text("Torcida ${formatPlain(fanbase)} · Estádio ${formatPlain(capacity)} lug.", style = MaterialTheme.typography.labelMedium, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f))
+            }
         }
     }
 }
@@ -295,11 +498,20 @@ private fun CopaCard(status: String, champion: String?) {
 }
 
 @Composable
-private fun FinancesCard(ui: CareerUi, onExpand: () -> Unit, onCampaign: () -> Unit) {
-    Card {
+private fun FinancesCard(
+    ledger: Finances.SeasonLedger?,
+    runway: Finances.RunwayProjection?,
+    expansionCost: Long,
+    marketingCost: Long,
+    canExpand: Boolean,
+    canCampaign: Boolean,
+    onExpand: () -> Unit,
+    onCampaign: () -> Unit,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = GlassBody), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().border(1.dp, GlassBorder, RoundedCornerShape(16.dp))) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Finanças", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            ui.ledger?.let { l ->
+            ledger?.let { l ->
                 LedgerLine("Bilheteria", l.ticket)
                 LedgerLine("TV", l.tv)
                 LedgerLine("Patrocínio", l.sponsorship)
@@ -307,7 +519,7 @@ private fun FinancesCard(ui: CareerUi, onExpand: () -> Unit, onCampaign: () -> U
                 LedgerLine("Salários", -l.wages)
                 LedgerLine("Saldo da temporada", l.net, bold = true)
             }
-            ui.runway?.let { r ->
+            runway?.let { r ->
                 val color = if (r.atRisk) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                 Text(
                     "Projeção fim de temporada: ${formatMoney(r.projectedEndBalance)}" + if (r.atRisk) " ⚠ risco de caixa" else "",
@@ -316,11 +528,11 @@ private fun FinancesCard(ui: CareerUi, onExpand: () -> Unit, onCampaign: () -> U
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onExpand, enabled = ui.canExpand, modifier = Modifier.weight(1f)) {
-                    Text("Estádio +5k\n${formatMoney(ui.expansionCost)}", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                OutlinedButton(onClick = onExpand, enabled = canExpand, modifier = Modifier.weight(1f)) {
+                    Text("Estádio +5k\n${formatMoney(expansionCost)}", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
                 }
-                OutlinedButton(onClick = onCampaign, enabled = ui.canCampaign, modifier = Modifier.weight(1f)) {
-                    Text("Marketing\n${formatMoney(ui.marketingCost)}", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                OutlinedButton(onClick = onCampaign, enabled = canCampaign, modifier = Modifier.weight(1f)) {
+                    Text("Marketing\n${formatMoney(marketingCost)}", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
                 }
             }
         }
@@ -394,9 +606,8 @@ private fun StandingsTable(
     nameOf: (Int) -> String,
     modifier: Modifier = Modifier,
 ) {
-    // Plain rows (not a nested LazyColumn) so the whole career screen scrolls as one.
     Column(modifier) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 8.dp)) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 12.dp)) {
             Cell("#", 0.10f, bold = true)
             Cell("Time", 0.50f, bold = true)
             Cell("J", 0.11f, bold = true, end = true)
@@ -406,27 +617,29 @@ private fun StandingsTable(
         standings.forEachIndexed { i, s ->
             val isUser = s.teamId == controlledTeamId
             val bg = when {
-                isUser -> MaterialTheme.colorScheme.primaryContainer
+                isUser -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                 i < 3 -> MaterialTheme.colorScheme.surfaceVariant
-                i >= standings.size - 3 -> MaterialTheme.colorScheme.errorContainer
-                else -> MaterialTheme.colorScheme.surface
+                i >= standings.size - 3 -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                else -> androidx.compose.ui.graphics.Color.Transparent
             }
-            Row(
-                Modifier.fillMaxWidth()
-                    .padding(vertical = 1.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(bg)
-                    .padding(vertical = 7.dp, horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            val rowModifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(bg)
+                .then(if (isUser) Modifier.border(1.dp, NeonCyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp)) else Modifier)
+                .padding(vertical = 10.dp, horizontal = 12.dp)
+
+            Row(rowModifier, verticalAlignment = Alignment.CenterVertically) {
                 Cell("${i + 1}", 0.10f, bold = isUser)
-                Row(Modifier.weight(0.50f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ClubCrest(nameOf(s.teamId), s.teamId, size = 18.dp)
+                Row(Modifier.weight(0.50f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ClubCrest(nameOf(s.teamId), s.teamId, size = 20.dp)
                     Text(
                         nameOf(s.teamId),
-                        fontSize = 12.sp,
-                        fontWeight = if (isUser) FontWeight.Bold else FontWeight.Normal,
+                        fontSize = 13.sp,
+                        fontWeight = if (isUser) FontWeight.Bold else FontWeight.Medium,
                         maxLines = 1,
+                        color = if (isUser) NeonCyan else MaterialTheme.colorScheme.onSurface
                     )
                 }
                 Cell("${s.played}", 0.11f, end = true)

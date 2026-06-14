@@ -24,6 +24,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.border
+import dev.debene.ui.theme.GradientStart
+import dev.debene.ui.theme.GradientEnd
+import dev.debene.ui.theme.NeonCyan
+import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.debene.ui.theme.GandulaMono
 import dev.debene.gandula.career.TransferMarket
 import dev.debene.gandula.domain.Player
@@ -41,7 +50,7 @@ fun MarketScreen(modifier: Modifier = Modifier, vm: CareerViewModel = viewModel(
     MarketScreenContent(
         modifier = modifier,
         money = career.money,
-        marketOpen = vm.marketOpen,
+        marketOpen = vm.transfersOpen,
         squad = vm.squad.map { SquadRow(it, vm.sellPrice(it), vm.canSell(it)) },
         agents = vm.freeAgents.map { AgentRow(it, vm.buyPrice(it), vm.canBuy(it), vm.scout(it).delta) },
         transfers = vm.sessionTransfers,
@@ -65,16 +74,22 @@ fun MarketScreenContent(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-            Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                Text("Mercado de transferências", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("Caixa: ${formatMoneyM(money)}", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (marketOpen) "Mercado aberto — reforços jogam na próxima temporada."
-                    else "O mercado abre no fim da temporada.",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (marketOpen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        val gradient = Brush.linearGradient(colors = listOf(GradientStart, GradientEnd))
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Box(Modifier.fillMaxWidth().background(gradient).padding(16.dp)) {
+                Column {
+                    Text("Mercado de transferências", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text("Caixa: ${formatMoneyM(money)}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = NeonCyan)
+                    Text(
+                        if (marketOpen) "Mercado aberto — reforços entram a partir da próxima rodada."
+                        else "Mercado fechado.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (marketOpen) Color.White else Color.White.copy(alpha = 0.7f),
+                    )
+                }
             }
         }
 
@@ -116,17 +131,34 @@ fun MarketScreenContent(
 
 @Composable
 private fun SectionHeader(text: String) {
-    Text(text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
 }
 
 @Composable
 private fun PlayerLine(player: Player, trailing: String, actionLabel: String, enabled: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(player.position.name, fontFamily = GandulaMono, fontSize = 12.sp, modifier = Modifier.width(36.dp))
-        Text("${TransferMarket.playerOverall(player)}", fontFamily = GandulaMono, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.width(28.dp))
-        Text(player.name, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1)
-        Text(trailing, fontFamily = GandulaMono, fontSize = 11.sp, modifier = Modifier.width(110.dp))
-        OutlinedButton(onClick = onClick, enabled = enabled) { Text(actionLabel, fontSize = 12.sp) }
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = dev.debene.ui.theme.GlassBody),
+        modifier = Modifier.fillMaxWidth().border(1.dp, dev.debene.ui.theme.GlassBorder, RoundedCornerShape(14.dp))
+    ) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("${TransferMarket.playerOverall(player)}", fontFamily = GandulaMono, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text(player.position.name, fontFamily = GandulaMono, fontSize = 12.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(player.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
+                Text(trailing, fontFamily = GandulaMono, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+            }
+            OutlinedButton(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(8.dp)) {
+                Text(actionLabel, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 

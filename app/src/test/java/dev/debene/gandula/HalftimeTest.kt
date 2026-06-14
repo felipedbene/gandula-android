@@ -13,6 +13,7 @@ import dev.debene.gandula.engine.MatchEngine
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import kotlin.random.Random
@@ -58,6 +59,32 @@ class HalftimeTest {
     }
 
     @Test
+    fun `a half-time substitution changes the second half but not simulate()`() {
+        val teams = loadTeams()
+        val home = teams[0]
+        val away = teams[1]
+
+        // Sub the first bench player on for the last starter, at the interval.
+        val off = home.startingXi.last()
+        val on = home.bench.first()
+        val subs = listOf(off to on)
+
+        val withSub = MatchEngine.simulateSecondHalf(MatchEngine.simulateFirstHalf(home, away, 42), home, away, homeSubs = subs)
+        val withSub2 = MatchEngine.simulateSecondHalf(MatchEngine.simulateFirstHalf(home, away, 42), home, away, homeSubs = subs)
+        assertEquals("same sub → same match (deterministic)", withSub, withSub2)
+
+        // The substitution is narrated in the second half…
+        assertTrue(
+            "the sub shows up as an event",
+            withSub.events.any { e -> (e.kind as? dev.debene.gandula.domain.MatchEventKind.Substitution)?.let { it.off == off && it.on == on } == true },
+        )
+
+        // …and the no-sub path is byte-identical to the one-shot simulate().
+        val noSub = MatchEngine.simulateSecondHalf(MatchEngine.simulateFirstHalf(home, away, 42), home, away)
+        assertEquals("no subs → identical to simulate()", MatchEngine.simulate(home, away, 42), noSub)
+    }
+
+    @Test
     fun `live half-time patch reproduces exactly on re-simulation (load path)`() {
         val teams = loadTeams()
         val registry = teams.associateBy { it.id }
@@ -72,7 +99,8 @@ class HalftimeTest {
         val tierIds = career.season.divisions.map { it.teamIds }
         val rebuilt = CareerEngine.buildSeason(
             career.seed, career.season.year, tierIds, registry,
-            career.controlledTeamId, career.userRoster, career.userTactics, mapOf(0 to override),
+            career.controlledTeamId, career.userRoster, career.userTactics,
+            halftimeTactics = mapOf(0 to override),
         )
 
         val patchedDiv = CareerEngine.userDivision(patched.season, career.controlledTeamId)

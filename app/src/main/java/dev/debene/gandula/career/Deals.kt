@@ -2,23 +2,38 @@ package dev.debene.gandula.career
 
 import com.squareup.moshi.JsonClass
 import dev.debene.gandula.domain.Formation
+import dev.debene.gandula.domain.Player
 import dev.debene.gandula.domain.Position
 import dev.debene.gandula.domain.Tactics
 import kotlin.math.max
 import kotlin.math.roundToLong
 
-/** A single transfer-market transaction recorded for the history view. */
+/** A single transfer-market transaction recorded for the history view, and — for
+ *  mid-season moves — for deterministic roster reconstruction. `round` is the
+ *  league-round cursor when the move was made (the move is effective for the
+ *  user's matches at rounds >= `round`); `player` is the full snapshot so the
+ *  roster timeline can be replayed on load. Both default to legacy values so v4
+ *  saves (season-end-only market) still parse. */
 @JsonClass(generateAdapter = true)
 data class TransferRecord(
     val kind: String, // "buy" | "sell"
     val playerName: String,
     val position: Position,
     val price: Long,
+    val round: Int = -1,        // -1 = legacy / season-boundary (affects no match this season)
+    val player: Player? = null, // null = legacy (already folded into the season-start roster)
 )
 
-/** The user's season tactical overlay (applied to their effective team). */
+/** The user's tactical overlay (applied to their effective team). [xi] is an
+ *  optional explicit starting eleven (player ids); null = let [Roster] reconcile
+ *  the default XI. Carried by the season default, the pre-match, and the
+ *  half-time overlays alike. */
 @JsonClass(generateAdapter = true)
-data class SeasonTactics(val formation: Formation, val tactics: Tactics)
+data class SeasonTactics(
+    val formation: Formation,
+    val tactics: Tactics,
+    val xi: List<Int>? = null,
+)
 
 /** A negotiable TV/sponsorship contract. When present in [Deals], its
  *  `seasonAmount` overrides the tier-derived income floor for that stream. */
