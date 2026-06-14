@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.Payments
-import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Stadium
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,7 +44,7 @@ import dev.debene.ui.theme.TextSlate400
 fun GandulaRoot(modifier: Modifier = Modifier) {
     var started by remember { mutableStateOf(false) }
     if (started) {
-        GandulaApp(modifier, initialTab = 1) // land on Carreira
+        GandulaApp(modifier, initialTab = 0) // land on Jogo (Carreira)
     } else {
         GandulaSplash(modifier, onStart = { started = true })
     }
@@ -56,11 +55,10 @@ fun GandulaRoot(modifier: Modifier = Modifier) {
 fun GandulaApp(modifier: Modifier = Modifier, initialTab: Int = 0) {
     var tab by remember { mutableIntStateOf(initialTab) }
     val items = listOf(
-        Triple("Partida", Icons.Filled.SportsSoccer, 0),
-        Triple("Jogo", Icons.Filled.Stadium, 1),
-        Triple("Tabela", Icons.Filled.Leaderboard, 2),
-        Triple("Finanças", Icons.Filled.Payments, 3),
-        Triple("Elenco", Icons.Filled.Groups, 4),
+        Triple("Jogo", Icons.Filled.Stadium, 0),
+        Triple("Tabela", Icons.Filled.Leaderboard, 1),
+        Triple("Finanças", Icons.Filled.Payments, 2),
+        Triple("Elenco", Icons.Filled.Groups, 3),
     )
     GlowBackground(modifier) {
         Column(Modifier.fillMaxSize()) {
@@ -81,10 +79,9 @@ fun GandulaApp(modifier: Modifier = Modifier, initialTab: Int = 0) {
             }
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 when (tab) {
-                    0 -> MatchScreen(modifier = Modifier.fillMaxSize())
-                    1 -> CareerScreen(modifier = Modifier.fillMaxSize())
-                    2 -> CareerTableScreen(modifier = Modifier.fillMaxSize())
-                    3 -> CareerFinanceScreen(modifier = Modifier.fillMaxSize())
+                    0 -> CareerScreen(modifier = Modifier.fillMaxSize())
+                    1 -> CareerTableScreen(modifier = Modifier.fillMaxSize())
+                    2 -> CareerFinanceScreen(modifier = Modifier.fillMaxSize())
                     else -> MarketScreen(modifier = Modifier.fillMaxSize())
                 }
             }
