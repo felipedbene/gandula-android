@@ -24,3 +24,10 @@ debug.keystore
 gandula.zip
 gandula-main.zip
 google-chrome-*
+
+# Signing material — NEVER commit (this is the app's identity / secrets)
+*.jks
+*.keystore
+keystore.properties
+keystore.base64.txt
+my-upload-key.jks
